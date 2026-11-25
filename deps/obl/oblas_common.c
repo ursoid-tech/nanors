@@ -1,4 +1,6 @@
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 #include "oblas_common.h"
 #include <stdlib.h>
 #include <string.h>
@@ -10,13 +12,14 @@
 #include <intrin.h>
 #endif
 
-void obl_swap(uint8_t *a, uint8_t *b, unsigned k)
+void obl_swap(uint8_t *restrict a, uint8_t *restrict b, unsigned k)
 {
-    register uint8_t *ap = a, *ae = &a[k], *bp = b;
-    for (; ap < ae; ap++, bp++) {
-        uint8_t tmp = *ap;
-        *ap = *bp;
-        *bp = tmp;
+    if (a == b || k == 0)
+        return;
+    for (unsigned i = 0; i < k; i++) {
+        uint8_t tmp = a[i];
+        a[i] = b[i];
+        b[i] = tmp;
     }
 }
 
