@@ -154,10 +154,10 @@ int main(int argc, char *argv[])
     }
     double processed_mb = (double)num * K * T * sizeof(uint16_t) / (1024.0 * 1024.0);
     printf("data shards = %d, repair shards = %d, encoded %.1f MB in %1.3f secs, "
-           "throughput: %.1fMB/s\n",
+           "throughput: %.3fMB/s\n",
            K, N, processed_mb, et, processed_mb / et);
     printf("data shards = %d, repair shards = %d, decoded %.1f MB in %1.3f secs, "
-           "throughput: %.1fMB/s\n",
+           "throughput: %.3fMB/s\n",
            K, N, processed_mb, dt, processed_mb / dt);
 
     printf("total time: %1.3f|%1.3f|%1.3f\n", now(0) - t0, et, dt);
