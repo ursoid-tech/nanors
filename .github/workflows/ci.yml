@@ -47,7 +47,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt update
-          sudo apt install -y qemu-user-static binfmt-support gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
+          sudo apt install -y qemu-user qemu-user-binfmt gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
 
       - name: Tests (RISCV64 Emulation)
         env:
