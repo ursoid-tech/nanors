@@ -1,5 +1,6 @@
 #ifdef __cplusplus
 #define register
+#define restrict __restrict
 #endif
 
 #include "oblas_lite.h"
@@ -214,8 +215,8 @@ GENERATE_IMPL(avx2_gfni, __attribute__((target("avx2,gfni"))), __m256i, _mm256_l
     const u8 *u_lo = GF2_8_SHUF_LO + u * 16;                                                                                       \
     const u8 *u_hi = GF2_8_SHUF_HI + u * 16;                                                                                       \
     const __m256i mask = _mm256_set1_epi8(0x0f);                                                                                   \
-    const __m256i urow_lo = _mm256_loadu2_m128i((const __m128i *)u_lo, (const __m128i *)u_lo);                                     \
-    const __m256i urow_hi = _mm256_loadu2_m128i((const __m128i *)u_hi, (const __m128i *)u_hi)
+    const __m256i urow_lo = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)u_lo));                                   \
+    const __m256i urow_hi = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)u_hi))
 #define VEC_CORE_avx2_std(bx, res)                                                                                                 \
     __m256i lo_##res = _mm256_and_si256(bx, mask);                                                                                 \
     __m256i hi_##res = _mm256_and_si256(_mm256_srli_epi64(bx, 4), mask);                                                           \
@@ -396,83 +397,87 @@ static void obl_swap_rvv(u8 *a, u8 *b, unsigned k)
     }
 }
 
-static void obl_axpy_rvv(u8 *a, u8 *b, u8 u, unsigned k)
+static inline void rvv_multiply_row(u8 *a, u8 *b, u8 u, unsigned k, int add)
 {
-    if (u == 0) {
+    size_t tvl = __riscv_vsetvl_e8m1(16);
+    if (tvl < 16) {
+        if (add)
+            obl_axpy_ref(a, b, u, k);
+        else
+            obl_axiy_ref(a, b, u, k);
         return;
     }
+    vuint8m1_t lo = __riscv_vle8_v_u8m1(GF2_8_SHUF_LO + (unsigned)u * 16, tvl);
+    vuint8m1_t hi = __riscv_vle8_v_u8m1(GF2_8_SHUF_HI + (unsigned)u * 16, tvl);
+    size_t vl;
+    for (unsigned i = 0; i < k; i += (unsigned)vl) {
+        vl = __riscv_vsetvl_e8m1(k - i);
+        vuint8m1_t acc;
+        if (add)
+            acc = __riscv_vle8_v_u8m1(a + i, vl);
+        vuint8m1_t src = __riscv_vle8_v_u8m1(b + i, vl);
+        vuint8m1_t slo = __riscv_vand_vx_u8m1(src, 0x0f, vl);
+        vuint8m1_t shi = __riscv_vsrl_vx_u8m1(src, 4, vl);
+        vuint8m1_t prod = __riscv_vxor_vv_u8m1(__riscv_vrgather_vv_u8m1(lo, slo, vl), __riscv_vrgather_vv_u8m1(hi, shi, vl), vl);
+        if (add)
+            prod = __riscv_vxor_vv_u8m1(acc, prod, vl);
+        __riscv_vse8_v_u8m1(a + i, prod, vl);
+    }
+}
+
+static void obl_axpy_rvv(u8 *a, u8 *b, u8 u, unsigned k)
+{
+    if (u == 0)
+        return;
     if (u == 1) {
         size_t vl;
-        for (unsigned i = 0; i < k; i += vl) {
-            vl = __riscv_vsetvl_e8m1(k - i);
-            vuint8m1_t va = __riscv_vle8_v_u8m1(a + i, vl);
-            vuint8m1_t vb = __riscv_vle8_v_u8m1(b + i, vl);
-            vuint8m1_t res = __riscv_vxor_vv_u8m1(va, vb, vl);
-            __riscv_vse8_v_u8m1(a + i, res, vl);
+        for (unsigned i = 0; i < k; i += (unsigned)vl) {
+            vl = __riscv_vsetvl_e8m4(k - i);
+            vuint8m4_t va = __riscv_vle8_v_u8m4(a + i, vl);
+            vuint8m4_t vb = __riscv_vle8_v_u8m4(b + i, vl);
+            __riscv_vse8_v_u8m4(a + i, __riscv_vxor_vv_u8m4(va, vb, vl), vl);
         }
         return;
     }
-    const u8 *u_lo = GF2_8_SHUF_LO + u * 16;
-    const u8 *u_hi = GF2_8_SHUF_HI + u * 16;
-    vuint8m1_t urow_lo = __riscv_vle8_v_u8m1(u_lo, 16);
-    vuint8m1_t urow_hi = __riscv_vle8_v_u8m1(u_hi, 16);
-    size_t vl;
-    for (unsigned i = 0; i < k; i += vl) {
-        vl = __riscv_vsetvl_e8m1(k - i);
-        vuint8m1_t va = __riscv_vle8_v_u8m1(a + i, vl);
-        vuint8m1_t vb = __riscv_vle8_v_u8m1(b + i, vl);
-        vuint8m1_t indices_lo = __riscv_vand_vx_u8m1(vb, 0x0F, vl);
-        vuint8m1_t indices_hi = __riscv_vsrl_vx_u8m1(vb, 4, vl);
-        vuint8m1_t prod_lo = __riscv_vrgather_vv_u8m1(urow_lo, indices_lo, vl);
-        vuint8m1_t prod_hi = __riscv_vrgather_vv_u8m1(urow_hi, indices_hi, vl);
-        vuint8m1_t prod = __riscv_vxor_vv_u8m1(prod_lo, prod_hi, vl);
-        vuint8m1_t res = __riscv_vxor_vv_u8m1(va, prod, vl);
-        __riscv_vse8_v_u8m1(a + i, res, vl);
-    }
+    rvv_multiply_row(a, b, u, k, 1);
 }
 
 static void obl_axiy_rvv(u8 *a, u8 *b, u8 u, unsigned k)
 {
     if (u == 0) {
-        size_t vl;
-        for (unsigned i = 0; i < k; i += vl) {
-            vl = __riscv_vsetvl_e8m1(k - i);
-            vuint8m1_t zero = __riscv_vmv_v_x_u8m1(0, vl);
-            __riscv_vse8_v_u8m1(a + i, zero, vl);
-        }
-        return;
-    }
-    if (u == 1) {
-        if (a != b) {
-            size_t vl;
-            for (unsigned i = 0; i < k; i += vl) {
-                vl = __riscv_vsetvl_e8m1(k - i);
-                vuint8m1_t vb = __riscv_vle8_v_u8m1(b + i, vl);
-                __riscv_vse8_v_u8m1(a + i, vb, vl);
-            }
-        }
-        return;
-    }
-    const u8 *u_lo = GF2_8_SHUF_LO + u * 16;
-    const u8 *u_hi = GF2_8_SHUF_HI + u * 16;
-    vuint8m1_t urow_lo = __riscv_vle8_v_u8m1(u_lo, 16);
-    vuint8m1_t urow_hi = __riscv_vle8_v_u8m1(u_hi, 16);
-    size_t vl;
-    for (unsigned i = 0; i < k; i += vl) {
-        vl = __riscv_vsetvl_e8m1(k - i);
-        vuint8m1_t vb = __riscv_vle8_v_u8m1(b + i, vl);
-        vuint8m1_t indices_lo = __riscv_vand_vx_u8m1(vb, 0x0F, vl);
-        vuint8m1_t indices_hi = __riscv_vsrl_vx_u8m1(vb, 4, vl);
-        vuint8m1_t prod_lo = __riscv_vrgather_vv_u8m1(urow_lo, indices_lo, vl);
-        vuint8m1_t prod_hi = __riscv_vrgather_vv_u8m1(urow_hi, indices_hi, vl);
-        vuint8m1_t prod = __riscv_vxor_vv_u8m1(prod_lo, prod_hi, vl);
-        __riscv_vse8_v_u8m1(a + i, prod, vl);
+        memset(a, 0, k);
+    } else if (u == 1) {
+        if (a != b)
+            memcpy(a, b, k);
+    } else {
+        rvv_multiply_row(a, b, u, k, 0);
     }
 }
 
 static void obl_scal_rvv(u8 *a, u8 u, unsigned k)
 {
     obl_axiy_rvv(a, a, u, k);
+}
+
+static void obl_axpyb32_rvv(u8 *a, u32 *b, u8 u, unsigned k)
+{
+    if (u == 0 || k == 0)
+        return;
+    const uint8_t *bm = (const uint8_t *)b;
+    unsigned i = 0, bulk = k & ~7u;
+    while (i < bulk) {
+        size_t vl = __riscv_vsetvl_e8m2(bulk - i) & ~(size_t)7u;
+        if (vl == 0)
+            break;
+        vbool4_t mask = __riscv_vlm_v_b4(bm + (i >> 3), vl);
+        vuint8m2_t va = __riscv_vle8_v_u8m2(a + i, vl);
+        __riscv_vse8_v_u8m2(a + i, __riscv_vxor_vx_u8m2_mu(mask, va, va, u, vl), vl);
+        i += (unsigned)vl;
+    }
+    for (; i < k; i++) {
+        if ((bm[i >> 3] >> (i & 7u)) & 1u)
+            a[i] ^= u;
+    }
 }
 #endif
 
@@ -507,7 +512,7 @@ void oblas_get_impl(struct oblas_impl *impl)
     impl->swap = obl_swap;
 
 #if defined(OBLAS_ARCH_X86)
-    int has_avx512 = __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") &&
+    int has_avx512 = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") &&
                      __builtin_cpu_supports("avx512dq") && __builtin_cpu_supports("avx512vl");
     if (has_avx512 && __builtin_cpu_supports("gfni")) {
         OBL_SET_IMPL(avx512_gfni, avx512, avx512, 64);
@@ -525,7 +530,7 @@ void oblas_get_impl(struct oblas_impl *impl)
 #elif defined(OBLAS_ARCH_ARM) && (defined(__ARM_NEON) || defined(_MSC_VER))
     OBL_SET_IMPL(neon, neon, neon, 16);
 #elif defined(OBLAS_ARCH_RISCV) && defined(__riscv_vector)
-    OBL_SET_IMPL(rvv, rvv, ref, 16);
+    OBL_SET_IMPL(rvv, rvv, rvv, 16);
 #endif
 #ifdef _MSC_VER
 #pragma warning(pop)
