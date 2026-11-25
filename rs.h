@@ -7,6 +7,10 @@
 
 #define RS8_DATA_SHARDS_MAX 255
 
+#ifndef RS8_USE_GAMESTREAM
+#define RS8_USE_GAMESTREAM 1
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

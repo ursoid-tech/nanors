@@ -125,7 +125,11 @@ reed_solomon *reed_solomon_new_static(void *buf, size_t len, int ds, int ps)
     for (int j = 0; j < rs->ps; j++) {
         u8 *row = rs->p + j * rs->ds;
         for (int i = 0; i < rs->ds; i++)
+#if RS8_USE_GAMESTREAM
             row[i] = GF2_8_INV[(rs->ps + i) ^ j];
+#else
+            row[i] = GF2_8_INV[GF2_8_EXP[254 - i] ^ GF2_8_EXP[j]];
+#endif
     }
 
     return rs;
